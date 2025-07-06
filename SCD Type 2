@@ -1,0 +1,74 @@
+-- Stored Procedure for SCD Type 2
+-- Creates a new record for each change, preserving full history.
+
+CREATE PROCEDURE usp_SCD_Type2_Load
+    @BatchID INT = NULL -- Optional: For tracking loads
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @CurrentDate DATETIME = GETDATE();
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- 1. Update existing records that have changed in the source
+        UPDATE T
+        SET
+            T.ExpiryDate = DATEADD(day, -1, @CurrentDate), -- Set expiry to day before new record
+            T.IsCurrent = 0,
+            T.LastUpdatedDate = @CurrentDate
+        FROM
+            DimTable AS T
+        INNER JOIN
+            SourceTable AS S ON T.BusinessKey = S.BusinessKey
+        WHERE
+            T.IsCurrent = 1
+            AND (
+                    T.Attribute1 <> S.Attribute1 OR
+                    T.Attribute2 <> S.Attribute2 -- Add all Type 2 attributes here
+                );
+
+        -- 2. Insert new records for changed or new data
+        INSERT INTO DimTable (
+            BusinessKey,
+            Attribute1,
+            Attribute2,
+            EffectiveDate,
+            ExpiryDate,
+            IsCurrent,
+            LoadDate,
+            LastUpdatedDate
+        )
+        SELECT
+            S.BusinessKey,
+            S.Attribute1,
+            S.Attribute2,
+            @CurrentDate AS EffectiveDate,
+            '9999-12-31' AS ExpiryDate, -- Far future date
+            1 AS IsCurrent,
+            @CurrentDate AS LoadDate,
+            @CurrentDate AS LastUpdatedDate
+        FROM
+            SourceTable AS S
+        LEFT JOIN
+            DimTable AS T ON S.BusinessKey = T.BusinessKey AND T.IsCurrent = 1
+        WHERE
+            T.BusinessKey IS NULL -- New record
+            OR ( -- Changed record
+                T.BusinessKey IS NOT NULL
+                AND (
+                        T.Attribute1 <> S.Attribute1 OR
+                        T.Attribute2 <> S.Attribute2
+                    )
+                );
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+END;
+GO
