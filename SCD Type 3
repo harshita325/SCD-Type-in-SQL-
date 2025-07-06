@@ -1,0 +1,35 @@
+-- Stored Procedure for SCD Type 3
+-- Adds new attribute columns to store previous values. Limited history.
+
+CREATE PROCEDURE usp_SCD_Type3_Load
+    @BatchID INT = NULL -- Optional: For tracking loads
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        MERGE INTO DimTable AS T
+        USING SourceTable AS S
+        ON T.BusinessKey = S.BusinessKey
+        WHEN MATCHED AND (T.CurrentAttribute <> S.Attribute1) THEN
+            UPDATE SET
+                T.PreviousAttribute = T.CurrentAttribute, -- Store current as previous
+                T.CurrentAttribute = S.Attribute1,      -- Update current
+                T.PreviousAttributeEffectiveDate = T.CurrentAttributeEffectiveDate, -- Update effective dates
+                T.CurrentAttributeEffectiveDate = GETDATE(),
+                T.LastUpdatedDate = GETDATE()
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT (BusinessKey, CurrentAttribute, PreviousAttribute, CurrentAttributeEffectiveDate, PreviousAttributeEffectiveDate, LoadDate, LastUpdatedDate)
+            VALUES (S.BusinessKey, S.Attribute1, NULL, GETDATE(), NULL, GETDATE(), GETDATE());
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+END;
+GO
