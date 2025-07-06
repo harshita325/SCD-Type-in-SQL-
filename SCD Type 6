@@ -1,0 +1,114 @@
+-- Stored Procedure for SCD Type 6 (Hybrid: Type 2 + Type 1 elements)
+-- Creates new row for Type 2 attributes. Updates current row for Type 1 attributes.
+
+CREATE PROCEDURE usp_SCD_Type6_Load
+    @BatchID INT = NULL -- Optional: For tracking loads
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @CurrentDate DATETIME = GETDATE();
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- Temporary table to hold changes (both new and updated)
+        SELECT
+            S.BusinessKey,
+            S.AttributeType2_1, -- Attribute that triggers new row (Type 2)
+            S.AttributeType2_2, -- Another Type 2 attribute
+            S.AttributeType1_1, -- Attribute that overwrites (Type 1)
+            S.AttributeType1_2  -- Another Type 1 attribute
+        INTO
+            #StagingChanges
+        FROM
+            SourceTable AS S;
+
+        -- 1. Identify and Expire Type 2 Changes
+        -- Find existing current records where a Type 2 attribute has changed
+        UPDATE T
+        SET
+            T.ExpiryDate = DATEADD(day, -1, @CurrentDate),
+            T.IsCurrent = 0,
+            T.LastUpdatedDate = @CurrentDate
+        FROM
+            DimTable AS T
+        INNER JOIN
+            #StagingChanges AS SC ON T.BusinessKey = SC.BusinessKey
+        WHERE
+            T.IsCurrent = 1
+            AND (
+                    T.AttributeType2_1 <> SC.AttributeType2_1 OR
+                    T.AttributeType2_2 <> SC.AttributeType2_2
+                );
+
+        -- 2. Insert New Records for Type 2 Changes or New Business Keys
+        INSERT INTO DimTable (
+            BusinessKey,
+            AttributeType2_1,
+            AttributeType2_2,
+            AttributeType1_1, -- Also carry Type 1 attributes to new row
+            AttributeType1_2,
+            EffectiveDate,
+            ExpiryDate,
+            IsCurrent,
+            LoadDate,
+            LastUpdatedDate
+        )
+        SELECT
+            SC.BusinessKey,
+            SC.AttributeType2_1,
+            SC.AttributeType2_2,
+            SC.AttributeType1_1,
+            SC.AttributeType1_2,
+            @CurrentDate AS EffectiveDate,
+            '9999-12-31' AS ExpiryDate,
+            1 AS IsCurrent,
+            @CurrentDate AS LoadDate,
+            @CurrentDate AS LastUpdatedDate
+        FROM
+            #StagingChanges AS SC
+        LEFT JOIN
+            DimTable AS T ON SC.BusinessKey = T.BusinessKey AND T.IsCurrent = 1
+        WHERE
+            T.BusinessKey IS NULL -- New business key
+            OR ( -- Existing business key, but Type 2 attribute changed
+                T.BusinessKey IS NOT NULL
+                AND (
+                        T.AttributeType2_1 <> SC.AttributeType2_1 OR
+                        T.AttributeType2_2 <> SC.AttributeType2_2
+                    )
+                );
+
+        -- 3. Update Current Records for ONLY Type 1 Changes (no new row created)
+        -- This targets current rows where Type 2 attributes have NOT changed, but Type 1 attributes HAVE changed.
+        UPDATE T
+        SET
+            T.AttributeType1_1 = SC.AttributeType1_1,
+            T.AttributeType1_2 = SC.AttributeType1_2,
+            T.LastUpdatedDate = @CurrentDate
+        FROM
+            DimTable AS T
+        INNER JOIN
+            #StagingChanges AS SC ON T.BusinessKey = SC.BusinessKey
+        WHERE
+            T.IsCurrent = 1
+            AND (T.AttributeType2_1 = SC.AttributeType2_1 AND T.AttributeType2_2 = SC.AttributeType2_2) -- No Type 2 change
+            AND (
+                    T.AttributeType1_1 <> SC.AttributeType1_1 OR -- Type 1 change detected
+                    T.AttributeType1_2 <> SC.AttributeType1_2
+                );
+
+        DROP TABLE #StagingChanges;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        IF OBJECT_ID('tempdb..#StagingChanges') IS NOT NULL
+            DROP TABLE #StagingChanges;
+        THROW;
+    END CATCH;
+END;
+GO
