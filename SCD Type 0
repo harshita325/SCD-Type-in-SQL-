@@ -1,0 +1,21 @@
+-- Stored Procedure for SCD Type 0
+-- Attributes never change in the dimension once loaded.
+
+CREATE PROCEDURE usp_SCD_Type0_Load
+    @BatchID INT = NULL -- Optional: For tracking loads
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Assume DimTable has a BusinessKey that is unique
+    -- and other attributes that are Type 0.
+
+    MERGE INTO DimTable AS T
+    USING SourceTable AS S
+    ON T.BusinessKey = S.BusinessKey
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (BusinessKey, Attribute1, Attribute2, LoadDate)
+        VALUES (S.BusinessKey, S.Attribute1, S.Attribute2, GETDATE());
+        -- No UPDATE clause needed as attributes never change
+END;
+GO
