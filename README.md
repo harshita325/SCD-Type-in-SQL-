@@ -1,0 +1,1 @@
+# SCD-Type-in-SQL-
