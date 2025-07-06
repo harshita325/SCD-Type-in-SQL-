@@ -1,0 +1,36 @@
+-- Stored Procedure for SCD Type 1
+-- Overwrites existing attribute values. History is lost.
+
+CREATE PROCEDURE usp_SCD_Type1_Load
+    @BatchID INT = NULL -- Optional: For tracking loads
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        MERGE INTO DimTable AS T
+        USING SourceTable AS S
+        ON T.BusinessKey = S.BusinessKey
+        WHEN MATCHED AND (
+                            T.Attribute1 <> S.Attribute1 OR
+                            T.Attribute2 <> S.Attribute2 -- Add all Type 1 attributes here
+                         ) THEN
+            UPDATE SET
+                T.Attribute1 = S.Attribute1,
+                T.Attribute2 = S.Attribute2,
+                T.LastUpdatedDate = GETDATE()
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT (BusinessKey, Attribute1, Attribute2, LoadDate, LastUpdatedDate)
+            VALUES (S.BusinessKey, S.Attribute1, S.Attribute2, GETDATE(), GETDATE());
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        THROW; -- Re-throw the error
+    END CATCH;
+END;
+GO
