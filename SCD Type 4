@@ -1,0 +1,70 @@
+-- Stored Procedure for SCD Type 4
+-- Main DimTable acts as Type 1. History stored in a separate HistoryTable.
+
+CREATE PROCEDURE usp_SCD_Type4_Load
+    @BatchID INT = NULL -- Optional: For tracking loads
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @CurrentDate DATETIME = GETDATE();
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- 1. Insert/Update into History Table (captures changes before DimTable is updated)
+        -- This part depends on how you want to capture history.
+        -- Option A: Capture ALL current state before update (simple, but can duplicate if no change)
+        -- Option B: Only capture if there's a change (more complex MERGE or IF EXISTS logic)
+
+        -- For simplicity, let's capture if there's a change or new record
+        INSERT INTO DimHistoryTable (
+            DimSurrogateKey, -- Link to the main DimTable record
+            BusinessKey,
+            Attribute1,
+            Attribute2,
+            EffectiveDate,
+            ExpiryDate,
+            LoadDate
+        )
+        SELECT
+            T.DimID, -- Assuming DimID is the surrogate key in DimTable
+            S.BusinessKey,
+            S.Attribute1,
+            S.Attribute2,
+            @CurrentDate,
+            '9999-12-31', -- Or NULL, depending on history table design
+            @CurrentDate
+        FROM
+            SourceTable AS S
+        INNER JOIN
+            DimTable AS T ON S.BusinessKey = T.BusinessKey
+        WHERE
+            (T.Attribute1 <> S.Attribute1 OR T.Attribute2 <> S.Attribute2) -- Only if changed
+            OR NOT EXISTS (SELECT 1 FROM DimTable WHERE BusinessKey = S.BusinessKey); -- Or new record
+
+        -- 2. Update/Insert into Main Dimension Table (SCD Type 1 behavior)
+        MERGE INTO DimTable AS T
+        USING SourceTable AS S
+        ON T.BusinessKey = S.BusinessKey
+        WHEN MATCHED AND (
+                            T.Attribute1 <> S.Attribute1 OR
+                            T.Attribute2 <> S.Attribute2
+                         ) THEN
+            UPDATE SET
+                T.Attribute1 = S.Attribute1,
+                T.Attribute2 = S.Attribute2,
+                T.LastUpdatedDate = @CurrentDate
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT (BusinessKey, Attribute1, Attribute2, LoadDate, LastUpdatedDate)
+            VALUES (S.BusinessKey, S.Attribute1, S.Attribute2, @CurrentDate, @CurrentDate);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+END;
+GO
